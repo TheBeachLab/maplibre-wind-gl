@@ -11,19 +11,22 @@
  *   3. Update shader: advects particles in equirectangular space
  *   4. Draw shader: for each age level, draws GL_LINES between consecutive
  *      historical positions with fading alpha (age-stratified trails)
+ *   5. Speed-based color ramp sampled from a 256x1 texture
  *
  * Usage:
  *   var windGL = new MaplibreWindGL('wind-layer', {
  *     data: '/weather/wind-surface.json',
  *     particles: 100000,
- *     speed: 0.2,          // advection rate
- *     maxAge: 8,           // trail length in frames
- *     color: [1, 1, 1],
+ *     speed: 1,            // advection rate
+ *     maxAge: 15,          // trail length in frames
  *     opacity: 0.4,
+ *     colorRamp: [         // speed-based color stops [speed, r, g, b]
+ *       [0,  0.3, 0.2, 0.7],
+ *       [15, 0.1, 0.8, 0.6],
+ *       [30, 0.9, 0.1, 0.1],
+ *     ],
  *   });
  *   map.addLayer(windGL);
- *   windGL.setData('/weather/wind-850.json');
- *   map.removeLayer('wind-layer');
  *
  * @license MIT
  * @author The Beach Lab
@@ -36,10 +39,21 @@
   var DEFAULT_MAX_AGE = 8;
   var DEFAULT_DROP_RATE = 0.003;
   var DEFAULT_DROP_BUMP = 0.01;
+  var DEFAULT_SPEED_RANGE = [0, 30];
+
+  // Default color ramp: calm indigo → blue → teal → green → yellow → orange → red
+  var DEFAULT_COLOR_RAMP = [
+    [0,   0.30, 0.20, 0.70],
+    [5,   0.10, 0.50, 0.90],
+    [10,  0.10, 0.80, 0.60],
+    [15,  0.40, 0.90, 0.20],
+    [20,  0.90, 0.90, 0.10],
+    [25,  0.90, 0.50, 0.10],
+    [30,  0.90, 0.10, 0.10],
+  ];
 
   // ── Shaders ────────────────────────────────────────────────────────
 
-  // Fullscreen quad vertex shader (for particle update pass)
   var QUAD_VERT = [
     'precision highp float;',
     'attribute vec2 a_pos;',
@@ -50,16 +64,21 @@
     '}',
   ].join('\n');
 
-  // Particle draw vertex shader — draws GL_LINES between two age states
+  // Draw vertex shader — samples wind for speed-based coloring
   var DRAW_VERT = [
     'precision highp float;',
     'attribute float a_index;',
     'uniform sampler2D u_particles_prev;',
     'uniform sampler2D u_particles_curr;',
+    'uniform sampler2D u_wind;',
+    'uniform vec2 u_wind_min;',
+    'uniform vec2 u_wind_max;',
     'uniform float u_particles_res;',
+    'uniform vec2 u_speed_range;',
     'uniform mat4 u_matrix;',
     'uniform vec4 u_clipping_plane;',
     'varying float v_alpha;',
+    'varying float v_speed;',
     '',
     'const float PI = 3.14159265359;',
     '',
@@ -91,31 +110,38 @@
     '  vec3 s1 = toSphere(pos1);',
     '  vec3 sphere = toSphere(pos);',
     '',
-    '  // Suppress teleport lines: compare in sphere space',
     '  float validLine = step(0.95, dot(s0, s1));',
     '',
-    '  // Horizon clipping — hide ENTIRE line if either endpoint is behind globe',
     '  float clip0 = dot(vec4(s0, 1.0), u_clipping_plane);',
     '  float clip1 = dot(vec4(s1, 1.0), u_clipping_plane);',
     '  float bothVisible = step(0.05, clip0) * step(0.05, clip1);',
+    '',
+    '  // Sample wind at current position for speed-based coloring',
+    '  vec2 windVal = texture2D(u_wind, pos1).rg;',
+    '  vec2 velocity = mix(u_wind_min, u_wind_max, windVal);',
+    '  float spd = length(velocity);',
+    '  v_speed = clamp((spd - u_speed_range.x) / (u_speed_range.y - u_speed_range.x), 0.0, 1.0);',
     '',
     '  gl_Position = u_matrix * vec4(sphere, 1.0);',
     '  v_alpha = bothVisible * validLine;',
     '}',
   ].join('\n');
 
-  // Particle draw fragment shader
+  // Draw fragment shader — samples color ramp by speed
   var DRAW_FRAG = [
     'precision highp float;',
-    'uniform vec4 u_color;',
+    'uniform sampler2D u_color_ramp;',
+    'uniform float u_opacity;',
     'varying float v_alpha;',
+    'varying float v_speed;',
     'void main() {',
     '  if (v_alpha < 0.01) discard;',
-    '  gl_FragColor = vec4(u_color.rgb, u_color.a * v_alpha);',
+    '  vec3 color = texture2D(u_color_ramp, vec2(v_speed, 0.5)).rgb;',
+    '  gl_FragColor = vec4(color, u_opacity * v_alpha);',
     '}',
   ].join('\n');
 
-  // Particle update fragment shader — advects positions
+  // Particle update fragment shader
   var UPDATE_FRAG = [
     'precision highp float;',
     'uniform sampler2D u_particles;',
@@ -232,6 +258,55 @@
     gl.bindTexture(gl.TEXTURE_2D, tex);
   }
 
+  // ── Color ramp texture ─────────────────────────────────────────────
+
+  function buildColorRampPixels(stops, speedRange) {
+    var pixels = new Uint8Array(256 * 4);
+    var sMin = speedRange[0], sMax = speedRange[1];
+
+    for (var i = 0; i < 256; i++) {
+      var speed = sMin + (i / 255) * (sMax - sMin);
+      var r = 0, g = 0, b = 0;
+
+      if (speed <= stops[0][0]) {
+        r = stops[0][1]; g = stops[0][2]; b = stops[0][3];
+      } else if (speed >= stops[stops.length - 1][0]) {
+        var last = stops[stops.length - 1];
+        r = last[1]; g = last[2]; b = last[3];
+      } else {
+        for (var j = 0; j < stops.length - 1; j++) {
+          if (speed >= stops[j][0] && speed < stops[j + 1][0]) {
+            var t = (speed - stops[j][0]) / (stops[j + 1][0] - stops[j][0]);
+            r = stops[j][1] + t * (stops[j + 1][1] - stops[j][1]);
+            g = stops[j][2] + t * (stops[j + 1][2] - stops[j][2]);
+            b = stops[j][3] + t * (stops[j + 1][3] - stops[j][3]);
+            break;
+          }
+        }
+      }
+
+      pixels[i * 4 + 0] = Math.round(r * 255);
+      pixels[i * 4 + 1] = Math.round(g * 255);
+      pixels[i * 4 + 2] = Math.round(b * 255);
+      pixels[i * 4 + 3] = 255;
+    }
+    return pixels;
+  }
+
+  function solidColorPixels(rgb) {
+    var pixels = new Uint8Array(256 * 4);
+    var r = Math.round(rgb[0] * 255);
+    var g = Math.round(rgb[1] * 255);
+    var b = Math.round(rgb[2] * 255);
+    for (var i = 0; i < 256; i++) {
+      pixels[i * 4 + 0] = r;
+      pixels[i * 4 + 1] = g;
+      pixels[i * 4 + 2] = b;
+      pixels[i * 4 + 3] = 255;
+    }
+    return pixels;
+  }
+
   // ── Wind data → texture ────────────────────────────────────────────
 
   function windDataToTexture(gl, json) {
@@ -319,8 +394,12 @@
     this._maxAge = o.maxAge || DEFAULT_MAX_AGE;
     this._dropRate = o.dropRate || DEFAULT_DROP_RATE;
     this._dropRateBump = o.dropRateBump || DEFAULT_DROP_BUMP;
-    this._color = o.color || [1, 1, 1];
     this._opacity = o.opacity !== undefined ? o.opacity : 0.4;
+    this._speedRange = o.speedRange || DEFAULT_SPEED_RANGE;
+
+    // Color: either a ramp (speed-based) or a flat color
+    this._colorRampStops = o.colorRamp !== undefined ? o.colorRamp : DEFAULT_COLOR_RAMP;
+    this._color = o.color || null;  // flat color fallback (null = use ramp)
 
     this._gl = null;
     this._map = null;
@@ -332,11 +411,51 @@
     this._quadBuf = null;
     this._indexBuf = null;
     this._particleRes = Math.ceil(Math.sqrt(this._numParticles));
-    this._stateTextures = [];   // ring buffer of maxAge+1 state textures
-    this._writeIndex = 0;       // next slot to write into
-    this._filledFrames = 0;     // how many frames have been written
+    this._stateTextures = [];
+    this._writeIndex = 0;
+    this._filledFrames = 0;
     this._particleFBO = null;
+    this._colorRampTexture = null;
   }
+
+  // ── Internal helpers ───────────────────────────────────────────────
+
+  MaplibreWindGL.prototype._createStateTextures = function() {
+    var gl = this._gl;
+    var res = this._particleRes;
+    var numSlots = this._maxAge + 1;
+    var initState = randomParticleState(res * res);
+    this._stateTextures = [];
+    for (var i = 0; i < numSlots; i++) {
+      this._stateTextures.push(createTexture(gl, gl.NEAREST, initState, res, res));
+    }
+    this._writeIndex = 0;
+    this._filledFrames = 0;
+  };
+
+  MaplibreWindGL.prototype._destroyStateTextures = function() {
+    var gl = this._gl;
+    for (var i = 0; i < this._stateTextures.length; i++) {
+      gl.deleteTexture(this._stateTextures[i]);
+    }
+    this._stateTextures = [];
+  };
+
+  MaplibreWindGL.prototype._rebuildColorRamp = function() {
+    var gl = this._gl;
+    if (!gl) return;
+    if (this._colorRampTexture) gl.deleteTexture(this._colorRampTexture);
+
+    var pixels;
+    if (this._colorRampStops) {
+      pixels = buildColorRampPixels(this._colorRampStops, this._speedRange);
+    } else if (this._color) {
+      pixels = solidColorPixels(this._color);
+    } else {
+      pixels = solidColorPixels([1, 1, 1]);
+    }
+    this._colorRampTexture = createTexture(gl, gl.LINEAR, pixels, 256, 1);
+  };
 
   // ── CustomLayerInterface methods ───────────────────────────────────
 
@@ -352,12 +471,12 @@
       return;
     }
 
-    // Fullscreen quad buffer (for update pass)
+    // Fullscreen quad buffer
     this._quadBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this._quadBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 0,1, 1,0, 1,1]), gl.STATIC_DRAW);
 
-    // Particle index buffer: 2 vertices per particle (GL_LINES)
+    // Particle index buffer
     var numParticles = this._particleRes * this._particleRes;
     var indices = new Float32Array(numParticles * 2);
     for (var i = 0; i < numParticles; i++) {
@@ -368,19 +487,10 @@
     gl.bindBuffer(gl.ARRAY_BUFFER, this._indexBuf);
     gl.bufferData(gl.ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
-    // Ring buffer of state textures — all initialized with same random data
-    // so trails don't start with teleport artifacts
-    var res = this._particleRes;
-    var numSlots = this._maxAge + 1;
-    var initState = randomParticleState(res * res);
-    this._stateTextures = [];
-    for (var j = 0; j < numSlots; j++) {
-      this._stateTextures.push(createTexture(gl, gl.NEAREST, initState, res, res));
-    }
-    this._writeIndex = 0;
-    this._filledFrames = 0;
-
+    // State textures and color ramp
     this._particleFBO = gl.createFramebuffer();
+    this._createStateTextures();
+    this._rebuildColorRamp();
 
     if (this._dataUrl) this.setData(this._dataUrl);
   };
@@ -392,23 +502,20 @@
     if (this._updateProg) gl.deleteProgram(this._updateProg.program);
     if (this._quadBuf) gl.deleteBuffer(this._quadBuf);
     if (this._indexBuf) gl.deleteBuffer(this._indexBuf);
-    for (var i = 0; i < this._stateTextures.length; i++) {
-      gl.deleteTexture(this._stateTextures[i]);
-    }
+    this._destroyStateTextures();
     if (this._particleFBO) gl.deleteFramebuffer(this._particleFBO);
+    if (this._colorRampTexture) gl.deleteTexture(this._colorRampTexture);
     if (this._wind) gl.deleteTexture(this._wind.texture);
     this._gl = null;
     this._map = null;
   };
 
-  // prerender: advect particle positions on the GPU
+  // prerender: advect particle positions
   MaplibreWindGL.prototype.prerender = function(gl, args) {
     if (!this._ready || !this._wind) return;
 
     var saved = saveGLState(gl);
     var len = this._stateTextures.length;
-
-    // Read from the most recently written slot, write to next slot
     var readIdx = (this._writeIndex - 1 + len) % len;
     var writeIdx = this._writeIndex;
 
@@ -443,24 +550,21 @@
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.disableVertexAttribArray(up.a_pos);
 
-    // Advance ring buffer
     this._writeIndex = (writeIdx + 1) % len;
     if (this._filledFrames < this._maxAge) this._filledFrames++;
 
     restoreGLState(gl, saved);
   };
 
-  // render: draw trail segments from oldest to newest with fading alpha
+  // render: draw trail segments oldest → newest with fading alpha
   MaplibreWindGL.prototype.render = function(gl, args) {
     if (!this._ready || !this._wind) return;
-    if (this._filledFrames < 1) return;  // need at least 2 states for a line
+    if (this._filledFrames < 1) return;
 
     var saved = saveGLState(gl);
     var matrix = args.defaultProjectionData.mainMatrix;
     var clippingPlane = args.defaultProjectionData.clippingPlane;
     var len = this._stateTextures.length;
-
-    // The newest state is at writeIndex - 1 (just written in prerender)
     var newestIdx = (this._writeIndex - 1 + len) % len;
 
     gl.disable(gl.DEPTH_TEST);
@@ -473,30 +577,34 @@
     gl.uniform1f(dp.u_particles_res, this._particleRes);
     gl.uniformMatrix4fv(dp.u_matrix, false, matrix);
     gl.uniform4fv(dp.u_clipping_plane, clippingPlane);
+    gl.uniform2f(dp.u_speed_range, this._speedRange[0], this._speedRange[1]);
+
+    // Bind wind texture (unit 2) and color ramp (unit 3) — shared across all age draws
+    bindTexture(gl, this._wind.texture, 2);
+    gl.uniform1i(dp.u_wind, 2);
+    gl.uniform2f(dp.u_wind_min, this._wind.uMin, this._wind.vMin);
+    gl.uniform2f(dp.u_wind_max, this._wind.uMax, this._wind.vMax);
+
+    bindTexture(gl, this._colorRampTexture, 3);
+    gl.uniform1i(dp.u_color_ramp, 3);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this._indexBuf);
     gl.enableVertexAttribArray(dp.a_index);
     gl.vertexAttribPointer(dp.a_index, 1, gl.FLOAT, false, 0, 0);
 
-    var c = this._color;
     var numSegments = Math.min(this._filledFrames, this._maxAge);
     var vertexCount = this._particleRes * this._particleRes * 2;
 
-    // Draw from oldest to newest (painter's order)
     for (var age = numSegments - 1; age >= 0; age--) {
       var currIdx = (newestIdx - age + len) % len;
       var prevIdx = (newestIdx - age - 1 + len) % len;
-
-      // Alpha fades linearly: newest (age=0) = full opacity, oldest = near zero
       var ageFactor = 1.0 - age / this._maxAge;
-      var alpha = ageFactor * this._opacity;
 
       bindTexture(gl, this._stateTextures[prevIdx], 0);
       gl.uniform1i(dp.u_particles_prev, 0);
       bindTexture(gl, this._stateTextures[currIdx], 1);
       gl.uniform1i(dp.u_particles_curr, 1);
-
-      gl.uniform4f(dp.u_color, c[0], c[1], c[2], alpha);
+      gl.uniform1f(dp.u_opacity, ageFactor * this._opacity);
 
       gl.drawArrays(gl.LINES, 0, vertexCount);
     }
@@ -523,9 +631,38 @@
       });
   };
 
-  MaplibreWindGL.prototype.setColor = function(rgb) { this._color = rgb; };
-  MaplibreWindGL.prototype.setSpeed = function(s) { this._speedFactor = s; };
-  MaplibreWindGL.prototype.setOpacity = function(o) { this._opacity = o; };
+  MaplibreWindGL.prototype.setSpeed = function(s) {
+    this._speedFactor = s;
+  };
+
+  MaplibreWindGL.prototype.setMaxAge = function(n) {
+    this._maxAge = Math.max(1, Math.round(n));
+    if (this._gl) {
+      this._destroyStateTextures();
+      this._createStateTextures();
+    }
+  };
+
+  MaplibreWindGL.prototype.setOpacity = function(o) {
+    this._opacity = o;
+  };
+
+  MaplibreWindGL.prototype.setColorRamp = function(stops) {
+    this._colorRampStops = stops;
+    this._color = null;
+    this._rebuildColorRamp();
+  };
+
+  MaplibreWindGL.prototype.setColor = function(rgb) {
+    this._color = rgb;
+    this._colorRampStops = null;
+    this._rebuildColorRamp();
+  };
+
+  MaplibreWindGL.prototype.setSpeedRange = function(range) {
+    this._speedRange = range;
+    this._rebuildColorRamp();
+  };
 
   // ── Export ─────────────────────────────────────────────────────────
 

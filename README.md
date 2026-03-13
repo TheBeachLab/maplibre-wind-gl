@@ -13,8 +13,9 @@ Particles are rendered entirely on the GPU as part of MapLibre's WebGL scene —
 - **GPU particle advection** — positions updated via render-to-texture, zero CPU overhead per frame
 - **Horizon clipping** — particles behind the globe are hidden using MapLibre's clipping plane
 - **Teleport suppression** — sphere-space dot product filter prevents lines when particles reset
-- **Single file, zero dependencies** — just `maplibre-wind-gl.js` (~300 lines), works with any MapLibre 4.x/5.x setup
-- **Decoupled speed and trail length** — `speed` controls how fast particles move, `maxAge` controls trail length independently
+- **Speed-based color ramp** — particles colored by wind speed using a customizable gradient, or a flat color
+- **Single file, zero dependencies** — just `maplibre-wind-gl.js` (~480 lines), works with any MapLibre 4.x/5.x setup
+- **Fully runtime-tunable** — speed, trail length, color ramp, opacity, and speed range can all be changed on the fly
 
 ## Live demo
 
@@ -40,8 +41,9 @@ map.on('load', function () {
     particles: 100000,
     speed: 1,
     maxAge: 15,
-    color: [1, 1, 1],
     opacity: 0.4,
+    // Default: speed-based color ramp (indigo → blue → green → yellow → red)
+    // Or use a flat color: color: [1, 1, 1]
   });
   map.addLayer(windLayer);
 });
@@ -83,17 +85,36 @@ var layer = new MaplibreWindGL(id, options);
 | `maxAge` | `number` | `8` | Trail length in frames (higher = longer trails) |
 | `dropRate` | `number` | `0.003` | Base probability of particle reset per frame |
 | `dropRateBump` | `number` | `0.01` | Additional reset probability in low-wind areas |
-| `color` | `number[3]` | `[1,1,1]` | RGB color (0-1 range) |
+| `colorRamp` | `number[][]` | see below | Speed-based color stops: `[[speed, r, g, b], ...]` (0-1 RGB) |
+| `color` | `number[3]` | — | Flat RGB color (0-1 range). Overrides `colorRamp` if set |
 | `opacity` | `number` | `0.4` | Overall opacity |
+| `speedRange` | `number[2]` | `[0, 30]` | Wind speed range (m/s) for color ramp mapping |
+
+Default color ramp (calm indigo → blue → teal → green → yellow → orange → red):
+
+```js
+[
+  [0,  0.30, 0.20, 0.70],  // 0 m/s  — indigo
+  [5,  0.10, 0.50, 0.90],  // 5 m/s  — blue
+  [10, 0.10, 0.80, 0.60],  // 10 m/s — teal
+  [15, 0.40, 0.90, 0.20],  // 15 m/s — green
+  [20, 0.90, 0.90, 0.10],  // 20 m/s — yellow
+  [25, 0.90, 0.50, 0.10],  // 25 m/s — orange
+  [30, 0.90, 0.10, 0.10],  // 30 m/s — red
+]
+```
 
 ### Methods
 
 | Method | Description |
 |--------|-------------|
 | `setData(url)` | Load new wind data (returns Promise) |
-| `setColor([r, g, b])` | Change particle color |
 | `setSpeed(n)` | Change advection speed |
+| `setMaxAge(n)` | Change trail length (rebuilds ring buffer) |
 | `setOpacity(n)` | Change opacity |
+| `setColorRamp(stops)` | Set speed-based color ramp (array of `[speed, r, g, b]`) |
+| `setColor([r, g, b])` | Switch to flat color (overrides color ramp) |
+| `setSpeedRange([min, max])` | Set wind speed range for color mapping |
 
 The layer implements MapLibre's `CustomLayerInterface` — add it with `map.addLayer(layer)` and remove with `map.removeLayer(id)`.
 
@@ -103,6 +124,8 @@ The layer implements MapLibre's `CustomLayerInterface` — add it with `map.addL
 
 ```
 Wind JSON ──→ windDataToTexture() ──→ Wind texture (360×181 RGBA)
+                                          │
+colorRamp ──→ buildColorRampPixels() ──→ Color ramp texture (256×1)
                                           │
                                           ▼
                      ┌──────── Update shader (prerender) ────────┐
@@ -116,6 +139,7 @@ Wind JSON ──→ windDataToTexture() ──→ Wind texture (360×181 RGBA)
                      │  For each age level (oldest → newest):    │
                      │    Bind state[age-1] as prev              │
                      │    Bind state[age] as curr                │
+                     │    Sample wind speed → color ramp texture │
                      │    Draw GL_LINES with fading alpha        │
                      │  Age 0 (newest) = full opacity            │
                      │  Age maxAge (oldest) = transparent        │
@@ -130,6 +154,7 @@ Wind JSON ──→ windDataToTexture() ──→ Wind texture (360×181 RGBA)
 - **Teleport filter**: `step(0.95, dot(s0, s1))` in sphere space suppresses lines when particles reset to random positions
 - **Both-endpoint clipping**: `step(0.05, clip0) · step(0.05, clip1)` — hides the entire line if either endpoint is behind the globe
 - **Age-stratified trails**: ring buffer of N state textures, each drawn as GL_LINES with linearly decreasing alpha — no FBO trail accumulation needed
+- **Speed-based color ramp**: 256×1 texture generated from interpolated color stops, sampled in the fragment shader using normalized wind speed
 
 ## Compatibility
 
