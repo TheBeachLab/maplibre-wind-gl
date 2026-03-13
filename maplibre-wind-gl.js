@@ -35,11 +35,11 @@
   'use strict';
 
   var DEFAULT_PARTICLES = 100000;
-  var DEFAULT_SPEED = 0.2;
-  var DEFAULT_MAX_AGE = 8;
-  var DEFAULT_DROP_RATE = 0.003;
-  var DEFAULT_DROP_BUMP = 0.01;
-  var DEFAULT_SPEED_RANGE = [0, 30];
+  var DEFAULT_SPEED = 1.0;
+  var DEFAULT_MAX_AGE = 15;
+  var DEFAULT_DROP_RATE = 0.02;
+  var DEFAULT_DROP_BUMP = 0;
+  var DEFAULT_SPEED_RANGE = [0, 80];
 
   // Default color ramp: calm indigo → blue → teal → green → yellow → orange → red
   var DEFAULT_COLOR_RAMP = [
@@ -110,7 +110,7 @@
     '  vec3 s1 = toSphere(pos1);',
     '  vec3 sphere = toSphere(pos);',
     '',
-    '  float validLine = step(0.95, dot(s0, s1));',
+    '  float validLine = step(0.9999, dot(s0, s1));',
     '',
     '  float clip0 = dot(vec4(s0, 1.0), u_clipping_plane);',
     '  float clip1 = dot(vec4(s1, 1.0), u_clipping_plane);',
@@ -184,6 +184,11 @@
     '  float distortion = cos(lat);',
     '  vec2 offset = vec2(velocity.x / max(distortion, 0.05), -velocity.y)',
     '                * 0.0001 * u_speed_factor;',
+    '',
+    '  // Clamp max displacement to prevent polar speed-of-light artifacts',
+    '  float maxStep = 0.0005 * u_speed_factor;',
+    '  float stepLen = length(offset);',
+    '  offset *= min(1.0, maxStep / max(stepLen, 1e-8));',
     '',
     '  pos = fract(1.0 + pos + offset);',
     '',

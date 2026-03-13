@@ -38,10 +38,7 @@ var map = new maplibregl.Map({
 map.on('load', function () {
   var windLayer = new MaplibreWindGL('wind-particles', {
     data: '/weather/wind-surface.json',
-    particles: 100000,
-    speed: 1,
-    maxAge: 15,
-    opacity: 0.4,
+    // All options have sensible defaults — just 'data' is required
     // Default: speed-based color ramp (indigo → blue → green → yellow → red)
     // Or use a flat color: color: [1, 1, 1]
   });
@@ -81,14 +78,14 @@ var layer = new MaplibreWindGL(id, options);
 |--------|------|---------|-------------|
 | `data` | `string` | — | URL to wind JSON data |
 | `particles` | `number` | `100000` | Number of particles |
-| `speed` | `number` | `0.2` | Advection speed (how fast particles move) |
-| `maxAge` | `number` | `8` | Trail length in frames (higher = longer trails) |
-| `dropRate` | `number` | `0.003` | Base probability of particle reset per frame |
-| `dropRateBump` | `number` | `0.01` | Additional reset probability in low-wind areas |
+| `speed` | `number` | `1.0` | Advection speed (how fast particles move) |
+| `maxAge` | `number` | `15` | Trail length in frames (higher = longer trails) |
+| `dropRate` | `number` | `0.02` | Base probability of particle reset per frame |
+| `dropRateBump` | `number` | `0` | Additional reset probability in low-wind areas |
 | `colorRamp` | `number[][]` | see below | Speed-based color stops: `[[speed, r, g, b], ...]` (0-1 RGB) |
 | `color` | `number[3]` | — | Flat RGB color (0-1 range). Overrides `colorRamp` if set |
-| `opacity` | `number` | `0.4` | Overall opacity |
-| `speedRange` | `number[2]` | `[0, 30]` | Wind speed range (m/s) for color ramp mapping |
+| `opacity` | `number` | `0.55` | Overall opacity |
+| `speedRange` | `number[2]` | `[0, 80]` | Wind speed range (m/s) for color ramp mapping |
 
 Default color ramp (calm indigo → blue → teal → green → yellow → orange → red):
 

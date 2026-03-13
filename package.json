@@ -1,6 +1,6 @@
 {
   "name": "maplibre-wind-gl",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "GPU-accelerated animated wind particles for MapLibre GL JS with globe projection support",
   "main": "maplibre-wind-gl.js",
   "keywords": [
