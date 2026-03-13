@@ -1,0 +1,27 @@
+{
+  "name": "maplibre-wind-gl",
+  "version": "0.1.0",
+  "description": "GPU-accelerated animated wind particles for MapLibre GL JS with globe projection support",
+  "main": "maplibre-wind-gl.js",
+  "keywords": [
+    "maplibre",
+    "wind",
+    "particles",
+    "webgl",
+    "globe",
+    "weather",
+    "visualization",
+    "gis",
+    "map"
+  ],
+  "author": "The Beach Lab",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thebeachlab/maplibre-wind-gl"
+  },
+  "homepage": "https://github.com/thebeachlab/maplibre-wind-gl",
+  "peerDependencies": {
+    "maplibre-gl": ">=4.0.0"
+  }
+}
