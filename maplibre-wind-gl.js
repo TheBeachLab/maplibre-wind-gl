@@ -399,7 +399,7 @@
     this._maxAge = o.maxAge || DEFAULT_MAX_AGE;
     this._dropRate = o.dropRate || DEFAULT_DROP_RATE;
     this._dropRateBump = o.dropRateBump || DEFAULT_DROP_BUMP;
-    this._opacity = o.opacity !== undefined ? o.opacity : 0.4;
+    this._opacity = o.opacity !== undefined ? o.opacity : 0.55;
     this._speedRange = o.speedRange || DEFAULT_SPEED_RANGE;
 
     // Color: either a ramp (speed-based) or a flat color
@@ -575,7 +575,6 @@
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
     var dp = this._drawProg;
     gl.useProgram(dp.program);
 
